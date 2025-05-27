@@ -1,7 +1,5 @@
 # barcode_split
 
-## Disclosures
-This tool was created with support from ChatGPT.  Verified using real sequence data in MacOS and Linux CentOS.
 
 ## Description
 
@@ -68,3 +66,5 @@ g++ -std=c++11 -lz -o barcode_split barcode_split.cpp
 ./barcode_split -p TTACCGGATTA -m 0 -o test/matched_set2 test/test_R1.fastq.gz test/test_R2.fastq.gz
 ```
 
+## Disclosures
+This tool was created with support from ChatGPT.  Verified using real sequence data in MacOS and Linux CentOS.
