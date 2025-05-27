@@ -36,20 +36,21 @@ insert both R1 and R2 require the same barcode.
 | `g++` (GNU C++) | Compile the C++ source code           | C++11 or higher  |
 | `zlib`          | Reading and writing `.fastq.gz` files | Any version ≥1.2 |
 
-* for debian/linux
+* :penguin: For debian/linux
 ``` bash
 sudo apt install g++ zlib1g-dev
 ```
 
-* For RedHat/CentOS
+* :penguin: For RedHat/CentOS
 
 ``` bash
 sudo yum install g++ zlib1g-dev
 
 ```
 
-* For MacOS
+* :apple: For MacOS
 ``` bash
+brew install gcc zlib
 
 ```
 
