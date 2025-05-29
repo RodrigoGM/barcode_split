@@ -9,18 +9,18 @@
 
 const int BUFFER_SIZE = 8192;
 
-// Print help message
 void print_usage(const std::string &prog_name) {
     std::cerr << "Usage: " << prog_name
-              << " -p <barcode> [-m <mismatches>] [-l <search_len>] [-t] [-o <output_stem>] R1.fastq.gz R2.fastq.gz\n\n"
+              << " -p <barcode> [-m <mismatches>] [--no-rc] [-l <search_len>] [-t] [-o <output_stem>] R1.fastq.gz R2.fastq.gz\n\n"
               << "Required arguments:\n"
               << "  -p <barcode>           Barcode sequence (must be ≥11 nt)\n\n"
               << "Optional arguments:\n"
               << "  -m <int>               Maximum allowed mismatches (default: 1)\n"
+              << "  --no-rc                Disable reverse complement matching (enabled by default)\n\n"
               << "  -l <int>               Length of sequence to search for barcode (default: 80)\n"
               << "  -t                     Trim barcode from read sequence and quality\n"
               << "  -o <output_stem>       Output file prefix (default: basename of R1)\n"
-              << "  -h                     Show this help message\n\n"
+              << "  -h                     Show this help message\n"
               << "Positional arguments:\n"
               << "  R1.fastq.gz R2.fastq.gz   Paired gzipped FASTQ input files\n";
 }
@@ -31,6 +31,20 @@ int hammingDistance(const std::string &s1, const std::string &s2) {
     for (size_t i = 0; i < s1.length(); ++i)
         if (s1[i] != s2[i]) ++dist;
     return dist;
+}
+
+std::string reverse_complement(const std::string &seq) {
+    std::string rc;
+    for (auto it = seq.rbegin(); it != seq.rend(); ++it) {
+        switch (*it) {
+            case 'A': rc += 'T'; break;
+            case 'T': rc += 'A'; break;
+            case 'C': rc += 'G'; break;
+            case 'G': rc += 'C'; break;
+            default:  rc += 'N'; break;
+        }
+    }
+    return rc;
 }
 
 bool readFastq(gzFile file, std::string &l1, std::string &l2, std::string &l3, std::string &l4) {
@@ -70,9 +84,10 @@ void writeFastqGz(gzFile out, const std::string &l1, const std::string &l2,
 }
 
 std::string basename_noext(const std::string &path) {
-    char *cpath = strdup(path.c_str());
+    char *cpath = new char[path.length() + 1];
+    std::strcpy(cpath, path.c_str());
     std::string name = basename(cpath);
-    free(cpath);
+    delete[] cpath;
     size_t dot = name.find_first_of('.');
     return (dot == std::string::npos) ? name : name.substr(0, dot);
 }
@@ -87,10 +102,18 @@ int main(int argc, char* argv[]) {
     int mismatches = 1;
     int search_len = 80;
     bool trim = false;
+    bool use_rc = true;
     std::string out_stem;
 
+    // Long options
+    static struct option long_options[] = {
+        {"no-rc", no_argument, nullptr, 1000},
+        {0, 0, 0, 0}
+    };
+
     int opt;
-    while ((opt = getopt(argc, argv, "m:l:tp:o:h")) != -1) {
+    int long_index = 0;
+    while ((opt = getopt_long(argc, argv, "m:l:tp:o:h", long_options, &long_index)) != -1) {
         switch (opt) {
             case 'm': mismatches = std::atoi(optarg); break;
             case 'l': search_len = std::atoi(optarg); break;
@@ -98,7 +121,8 @@ int main(int argc, char* argv[]) {
             case 'p': barcode = optarg; break;
             case 'o': out_stem = optarg; break;
             case 'h': print_usage(argv[0]); return 0;
-            default:  print_usage(argv[0]); return 1;
+            case 1000: use_rc = false; break;
+            default: print_usage(argv[0]); return 1;
         }
     }
 
@@ -119,6 +143,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    std::string barcode_rc = reverse_complement(barcode);
+
     gzFile r1_file = gzopen(r1_path.c_str(), "rb");
     gzFile r2_file = gzopen(r2_path.c_str(), "rb");
     gzFile out_r1 = gzopen(out_r1_name.c_str(), "wb");
@@ -137,8 +163,10 @@ int main(int argc, char* argv[]) {
            readFastq(r2_file, l1_R2, l2_R2, l3_R2, l4_R2)) {
 
         int pos1 = -1, pos2 = -1;
-        bool found1 = findBarcode(l2_R1, barcode, mismatches, search_len, pos1);
-        bool found2 = findBarcode(l2_R2, barcode, mismatches, search_len, pos2);
+        bool found1 = findBarcode(l2_R1, barcode, mismatches, search_len, pos1)
+                   || (use_rc && findBarcode(l2_R1, barcode_rc, mismatches, search_len, pos1));
+        bool found2 = findBarcode(l2_R2, barcode, mismatches, search_len, pos2)
+                   || (use_rc && findBarcode(l2_R2, barcode_rc, mismatches, search_len, pos2));
 
         if (found1 && found2) {
             std::string s2_R1 = l2_R1, s2_R2 = l2_R2;
