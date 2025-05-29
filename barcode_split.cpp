@@ -3,8 +3,9 @@
 #include <string>
 #include <zlib.h>
 #include <getopt.h>
-#include <cstdlib>
-#include <libgen.h>
+#include <cstring>   // for strdup()
+#include <cstdlib>   // for free()
+#include <libgen.h>  // for basename()
 
 const int BUFFER_SIZE = 8192;
 
