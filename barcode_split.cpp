@@ -11,15 +11,19 @@ const int BUFFER_SIZE = 8192;
 
 void print_usage(const std::string &prog_name) {
     std::cerr << "Usage: " << prog_name
-              << " -p <barcode> [-m <mismatches>] [--no-rc] [-l <search_len>] [-t] [-o <output_stem>] R1.fastq.gz R2.fastq.gz\n\n"
+              << " -p <barcode> [-m <mismatches>] [--no-rc] [-l <search_len>] [-t] [-o <output_stem>] [-u <ua_sequence>] [-M <ua_mismatches>] R1.fastq.gz R2.fastq.gz\n\n"
               << "Required arguments:\n"
-              << "  -p <barcode>           Barcode sequence (must be ≥11 nt)\n\n"
+              << "  -p <barcode>           Barcode sequence (must be ≥8 nt)\n\n"
               << "Optional arguments:\n"
-              << "  -m <int>               Maximum allowed mismatches (default: 1)\n"
-              << "  --no-rc                Disable reverse complement matching (enabled by default)\n\n"
+              << "  -m <int>               Maximum allowed mismatches in barcode (default: 1)\n"
+              << "  --no-rc                Disable reverse complement matching (enabled by default)\n"
               << "  -l <int>               Length of sequence to search for barcode (default: 80)\n"
               << "  -t                     Trim barcode from read sequence and quality\n"
               << "  -o <output_stem>       Output file prefix (default: basename of R1)\n"
+              << "  -u <ua_sequence>       Universal adapter sequence (enables UA-anchored mode)\n"
+              << "                         When provided, barcode must be immediately upstream of UA\n"
+              << "  -M <int>               Maximum allowed mismatches in UA sequence (default: 2)\n"
+              << "                         Only used when -u is specified\n"
               << "  -h                     Show this help message\n"
               << "Positional arguments:\n"
               << "  R1.fastq.gz R2.fastq.gz   Paired gzipped FASTQ input files\n";
@@ -57,7 +61,6 @@ bool readFastq(gzFile file, std::string &l1, std::string &l2, std::string &l3, s
     l3 = buffer;
     if (!gzgets(file, buffer, BUFFER_SIZE)) return false;
     l4 = buffer;
-
     l1.erase(l1.find_last_not_of("\r\n") + 1);
     l2.erase(l2.find_last_not_of("\r\n") + 1);
     l3.erase(l3.find_last_not_of("\r\n") + 1);
@@ -65,6 +68,7 @@ bool readFastq(gzFile file, std::string &l1, std::string &l2, std::string &l3, s
     return true;
 }
 
+// Original barcode finding function
 bool findBarcode(const std::string &seq, const std::string &barcode, int max_mismatches, int max_len, int &pos_out) {
     size_t max_pos = std::min((size_t)max_len, seq.length());
     size_t len = barcode.length();
@@ -72,6 +76,36 @@ bool findBarcode(const std::string &seq, const std::string &barcode, int max_mis
         std::string sub = seq.substr(i, len);
         if (hammingDistance(sub, barcode) <= max_mismatches) {
             pos_out = static_cast<int>(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+// New function to find barcode-UA pair
+bool findBarcodeUA(const std::string &seq, const std::string &barcode, const std::string &ua_seq, 
+                   int barcode_mismatches, int ua_mismatches, int max_len, int &barcode_pos_out) {
+    size_t barcode_len = barcode.length();
+    size_t ua_len = ua_seq.length();
+    size_t total_len = barcode_len + ua_len;
+    
+    // Make sure we have enough sequence to search
+    if (seq.length() < total_len) return false;
+    
+    size_t max_pos = std::min((size_t)max_len, seq.length() - total_len + 1);
+    
+    // Search for barcode-UA pattern
+    for (size_t i = 0; i < max_pos; ++i) {
+        // Extract potential barcode and UA sequences
+        std::string candidate_barcode = seq.substr(i, barcode_len);
+        std::string candidate_ua = seq.substr(i + barcode_len, ua_len);
+        
+        // Check if both barcode and UA match within allowed mismatches
+        int barcode_dist = hammingDistance(candidate_barcode, barcode);
+        int ua_dist = hammingDistance(candidate_ua, ua_seq);
+        
+        if (barcode_dist <= barcode_mismatches && ua_dist <= ua_mismatches) {
+            barcode_pos_out = static_cast<int>(i);
             return true;
         }
     }
@@ -104,6 +138,9 @@ int main(int argc, char* argv[]) {
     bool trim = false;
     bool use_rc = true;
     std::string out_stem;
+    std::string ua_sequence;  // No default value
+    int ua_mismatches = 2;
+    bool use_ua_mode = false;
 
     // Long options
     static struct option long_options[] = {
@@ -113,13 +150,18 @@ int main(int argc, char* argv[]) {
 
     int opt;
     int long_index = 0;
-    while ((opt = getopt_long(argc, argv, "m:l:tp:o:h", long_options, &long_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "m:l:tp:o:u:M:h", long_options, &long_index)) != -1) {
         switch (opt) {
             case 'm': mismatches = std::atoi(optarg); break;
             case 'l': search_len = std::atoi(optarg); break;
             case 't': trim = true; break;
             case 'p': barcode = optarg; break;
             case 'o': out_stem = optarg; break;
+            case 'u': 
+                ua_sequence = optarg; 
+                use_ua_mode = true; 
+                break;
+            case 'M': ua_mismatches = std::atoi(optarg); break;
             case 'h': print_usage(argv[0]); return 0;
             case 1000: use_rc = false; break;
             default: print_usage(argv[0]); return 1;
@@ -131,6 +173,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Validate UA mode parameters
+    if (use_ua_mode && ua_sequence.empty()) {
+        std::cerr << "Error: UA sequence cannot be empty when -u is specified.\n";
+        return 1;
+    }
+
     std::string r1_path = argv[optind];
     std::string r2_path = argv[optind + 1];
     if (out_stem.empty()) out_stem = basename_noext(r1_path);
@@ -138,12 +186,16 @@ int main(int argc, char* argv[]) {
     std::string out_r1_name = out_stem + "_R1.fastq.gz";
     std::string out_r2_name = out_stem + "_R2.fastq.gz";
 
-    if (barcode.length() < 11) {
-        std::cerr << "Error: Barcode must be at least 11 nucleotides.\n";
+    if (barcode.length() < 8) {  // Changed from 11 to 8
+        std::cerr << "Error: Barcode must be at least 8 nucleotides.\n";
         return 1;
     }
 
     std::string barcode_rc = reverse_complement(barcode);
+    std::string ua_rc;
+    if (use_ua_mode) {
+        ua_rc = reverse_complement(ua_sequence);
+    }
 
     gzFile r1_file = gzopen(r1_path.c_str(), "rb");
     gzFile r2_file = gzopen(r2_path.c_str(), "rb");
@@ -159,26 +211,61 @@ int main(int argc, char* argv[]) {
     std::string l1_R2, l2_R2, l3_R2, l4_R2;
     size_t matched_count = 0;
 
+    std::cout << "Mode: " << (use_ua_mode ? "Barcode-UA anchored" : "Barcode only") << "\n";
+    if (use_ua_mode) {
+        std::cout << "UA sequence: " << ua_sequence << "\n";
+        std::cout << "UA mismatches allowed: " << ua_mismatches << "\n";
+    }
+    std::cout << "Barcode: " << barcode << "\n";
+    std::cout << "Barcode mismatches allowed: " << mismatches << "\n";
+
     while (readFastq(r1_file, l1_R1, l2_R1, l3_R1, l4_R1) &&
            readFastq(r2_file, l1_R2, l2_R2, l3_R2, l4_R2)) {
-
+        
         int pos1 = -1, pos2 = -1;
-        bool found1 = findBarcode(l2_R1, barcode, mismatches, search_len, pos1)
-                   || (use_rc && findBarcode(l2_R1, barcode_rc, mismatches, search_len, pos1));
-        bool found2 = findBarcode(l2_R2, barcode, mismatches, search_len, pos2)
-                   || (use_rc && findBarcode(l2_R2, barcode_rc, mismatches, search_len, pos2));
+        bool found1 = false, found2 = false;
 
+        if (use_ua_mode) {
+            // Use barcode-UA anchored search
+            found1 = findBarcodeUA(l2_R1, barcode, ua_sequence, mismatches, ua_mismatches, search_len, pos1);
+            if (!found1 && use_rc) {
+                found1 = findBarcodeUA(l2_R1, barcode_rc, ua_rc, mismatches, ua_mismatches, search_len, pos1);
+            }
+            
+            found2 = findBarcodeUA(l2_R2, barcode, ua_sequence, mismatches, ua_mismatches, search_len, pos2);
+            if (!found2 && use_rc) {
+                found2 = findBarcodeUA(l2_R2, barcode_rc, ua_rc, mismatches, ua_mismatches, search_len, pos2);
+            }
+        } else {
+            // Use original barcode-only search
+            found1 = findBarcode(l2_R1, barcode, mismatches, search_len, pos1)
+                   || (use_rc && findBarcode(l2_R1, barcode_rc, mismatches, search_len, pos1));
+            found2 = findBarcode(l2_R2, barcode, mismatches, search_len, pos2)
+                   || (use_rc && findBarcode(l2_R2, barcode_rc, mismatches, search_len, pos2));
+        }
+
+        // Keep the original logic: require barcode in both reads
         if (found1 && found2) {
             std::string s2_R1 = l2_R1, s2_R2 = l2_R2;
             std::string q2_R1 = l4_R1, q2_R2 = l4_R2;
-
+            
             if (trim) {
-                s2_R1.erase(pos1, barcode.length());
-                q2_R1.erase(pos1, barcode.length());
-                s2_R2.erase(pos2, barcode.length());
-                q2_R2.erase(pos2, barcode.length());
+                if (use_ua_mode) {
+                    // Trim barcode + UA
+                    size_t trim_len = barcode.length() + ua_sequence.length();
+                    s2_R1.erase(pos1, trim_len);
+                    q2_R1.erase(pos1, trim_len);
+                    s2_R2.erase(pos2, trim_len);
+                    q2_R2.erase(pos2, trim_len);
+                } else {
+                    // Trim barcode only
+                    s2_R1.erase(pos1, barcode.length());
+                    q2_R1.erase(pos1, barcode.length());
+                    s2_R2.erase(pos2, barcode.length());
+                    q2_R2.erase(pos2, barcode.length());
+                }
             }
-
+            
             writeFastqGz(out_r1, l1_R1, s2_R1, l3_R1, q2_R1);
             writeFastqGz(out_r2, l1_R2, s2_R2, l3_R2, q2_R2);
             ++matched_count;
